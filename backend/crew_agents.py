@@ -65,24 +65,24 @@ class MLCrewAgents:
             try:
                 # Strategy 1: Try loading without config (works for simple datasets)
                 self.data_agent.log(f"Attempting to load: {variant}")
-                return load_dataset(variant, split=split, trust_remote_code=True)
+                return load_dataset(variant, split=split)
             except Exception as e1:
                 last_error = e1
                 self.data_agent.log(f"Direct load failed for {variant}: {str(e1)[:100]}")
                 
                 # Strategy 2: Try to get available configs and use the first one
                 try:
-                    configs = get_dataset_config_names(variant, trust_remote_code=True)
+                    configs = get_dataset_config_names(variant)
                     if configs:
                         config = configs[0]
                         self.data_agent.log(f"Found {len(configs)} configs for {variant}, using: {config}")
-                        return load_dataset(variant, config, split=split, trust_remote_code=True)
+                        return load_dataset(variant, config, split=split)
                 except Exception as e2:
                     self.data_agent.log(f"Config-based load failed for {variant}: {str(e2)[:100]}")
                 
                 # Strategy 3: Try loading the full dataset then accessing the split
                 try:
-                    full_dataset = load_dataset(variant, trust_remote_code=True)
+                    full_dataset = load_dataset(variant)
                     if split in full_dataset:
                         return full_dataset[split]
                     elif "train" in full_dataset:
@@ -124,6 +124,12 @@ class MLCrewAgents:
         
         self.data_agent.log(f"Loading dataset {dataset_name}")
         dataset = self._load_dataset_with_fallback(dataset_name, "train")
+        
+        # For large datasets, take a subset for faster training
+        if len(dataset) > 1000:
+            self.data_agent.log(f"Dataset has {len(dataset)} samples - taking first 1000 for faster training")
+            dataset = dataset.select(range(1000))
+        
         self.data_agent.log(f"Dataset ready: {len(dataset)} samples")
         
         self.training_agent.log(f"Loading model {model_name}")
@@ -155,14 +161,22 @@ class MLCrewAgents:
             texts = examples[text_column]
             # Handle case where text might be None or empty
             texts = [str(t) if t is not None else "" for t in texts]
-            return tokenizer(
+            result = tokenizer(
                 texts,
                 padding="max_length",
                 truncation=True,
                 max_length=config["max_length"]
             )
+            # For causal LM, labels should be the same as input_ids
+            # Use list() to create a proper copy in batched mode
+            result["labels"] = [ids[:] for ids in result["input_ids"]]
+            return result
         
-        tokenized_dataset = dataset.map(tokenize_function, batched=True)
+        tokenized_dataset = dataset.map(
+            tokenize_function, 
+            batched=True,
+            remove_columns=dataset.column_names  # Remove original columns, keep only tokenized
+        )
         
         training_args = TrainingArguments(
             output_dir=f"./data/models/{run_id}",
@@ -171,7 +185,9 @@ class MLCrewAgents:
             learning_rate=config["learning_rate"],
             logging_steps=10,
             save_strategy="epoch",
-            report_to="none"
+            report_to="none",
+            dataloader_num_workers=0,  # Avoid multiprocessing issues on Windows
+            dataloader_pin_memory=False  # Disable pin_memory on CPU
         )
         
         self.training_agent.log("Starting fine-tuning")
@@ -182,8 +198,13 @@ class MLCrewAgents:
             tokenizer=tokenizer
         )
         
-        result = trainer.train()
-        self.training_agent.log("Training completed")
+        try:
+            self.training_agent.log("Starting training loop...")
+            result = trainer.train()
+            self.training_agent.log("Training completed successfully")
+        except Exception as train_error:
+            self.training_agent.log(f"Training failed: {str(train_error)}")
+            raise
         
         self.evaluation_agent.log("Computing metrics")
         mlflow.log_metrics({

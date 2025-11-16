@@ -2,12 +2,16 @@ from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from huggingface_hub import list_models, list_datasets
+from huggingface_hub import list_models, list_datasets, login
 import mlflow
 import uuid
 import os
+from dotenv import load_dotenv
 
-from database import init_db, get_db, User, Dataset, Training
+# Load environment variables
+load_dotenv()
+
+from database import init_db, get_db, SessionLocal, User, Dataset, Training
 from auth import hash_password, verify_password, create_access_token, get_current_user
 from models import UserCreate, Token, DatasetCreate, DatasetResponse, TrainingConfig, TrainingResponse, TrainingStatus, DatasetValidationResponse
 from crew_agents import MLCrewAgents
@@ -33,6 +37,15 @@ def startup_event():
         user = User(username="admin", hashed_password=hash_password("admin123"))
         db.add(user)
         db.commit()
+    
+    # Authenticate with Hugging Face
+    hf_token = os.getenv("HF_TOKEN")
+    if hf_token:
+        try:
+            login(hf_token)
+            print("✅ Hugging Face authentication successful")
+        except Exception as e:
+            print(f"⚠️  Hugging Face authentication failed: {e}")
 
 @app.post("/register", response_model=Token)
 def register(user: UserCreate, db: Session = Depends(get_db)):
