@@ -1,3 +1,5 @@
+--index-url https://pypi.org/simple
+--extra-index-url https://download.pytorch.org/whl/cpu
 fastapi>=0.109.0
 uvicorn[standard]>=0.27.0
 python-jose[cryptography]>=3.3.0
@@ -5,7 +7,7 @@ passlib[bcrypt]>=1.7.4
 python-multipart>=0.0.6
 sqlalchemy>=2.0.0
 transformers>=4.40.0
-torch>=2.3.0
+torch==2.3.1
 datasets>=2.18.0
 mlflow>=2.10.0
 huggingface-hub>=0.22.0
