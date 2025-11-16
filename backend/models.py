@@ -40,3 +40,13 @@ class TrainingStatus(BaseModel):
     id: int
     status: str
     mlflow_run_id: Optional[str]
+
+class DatasetValidationResponse(BaseModel):
+    valid: bool
+    dataset_name: str
+    config_used: Optional[str] = None
+    num_samples: Optional[int] = None
+    columns: Optional[list] = None
+    text_column: Optional[str] = None
+    sample_texts: Optional[list] = None
+    error: Optional[str] = None

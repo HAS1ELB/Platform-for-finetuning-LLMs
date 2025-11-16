@@ -9,8 +9,9 @@ import os
 
 from database import init_db, get_db, User, Dataset, Training
 from auth import hash_password, verify_password, create_access_token, get_current_user
-from models import UserCreate, Token, DatasetCreate, DatasetResponse, TrainingConfig, TrainingResponse, TrainingStatus
+from models import UserCreate, Token, DatasetCreate, DatasetResponse, TrainingConfig, TrainingResponse, TrainingStatus, DatasetValidationResponse
 from crew_agents import MLCrewAgents
+from curated_datasets import CURATED_DATASETS, get_all_datasets_flat, get_dataset_by_name, search_datasets
 
 app = FastAPI(title="Mini Cloud Training")
 
@@ -83,6 +84,29 @@ def delete_dataset(dataset_id: int, db: Session = Depends(get_db), user: User = 
     db.delete(dataset)
     db.commit()
     return {"message": "Dataset deleted"}
+
+@app.post("/datasets/validate", response_model=DatasetValidationResponse)
+def validate_dataset(dataset_name: str, user: User = Depends(get_current_user)):
+    """Validate a dataset from Hugging Face before adding it."""
+    result = crew_agents.validate_dataset(dataset_name)
+    return result
+
+@app.get("/datasets/curated")
+def get_curated_datasets(user: User = Depends(get_current_user)):
+    """Get the curated list of popular datasets organized by category."""
+    return CURATED_DATASETS
+
+@app.get("/datasets/curated/all")
+def get_all_curated_datasets(user: User = Depends(get_current_user)):
+    """Get a flat list of all curated datasets."""
+    return get_all_datasets_flat()
+
+@app.get("/datasets/curated/search")
+def search_curated_datasets(q: str = "", user: User = Depends(get_current_user)):
+    """Search curated datasets by name or description."""
+    if not q:
+        return get_all_datasets_flat()
+    return search_datasets(q)
 
 def run_training_task(training_id: int, config: dict, run_id: str, db_session):
     try:

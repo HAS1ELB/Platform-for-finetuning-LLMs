@@ -1,7 +1,7 @@
 from typing import Dict, Any
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments, Trainer
-from datasets import load_dataset
+from datasets import load_dataset, get_dataset_config_names
 from peft import LoraConfig, get_peft_model, TaskType
 import mlflow
 import os
@@ -40,9 +40,72 @@ class MLCrewAgents:
     
     def load_dataset_task(self, dataset_name: str, split: str = "train"):
         self.data_agent.log(f"Loading dataset {dataset_name}")
-        data = load_dataset(dataset_name, split=split)
+        data = self._load_dataset_with_fallback(dataset_name, split)
         self.data_agent.log(f"Dataset loaded: {len(data)} samples")
         return data
+    
+    def _load_dataset_with_fallback(self, dataset_name: str, split: str = "train"):
+        """Load dataset with automatic config detection and fallback strategies."""
+        
+        # Common dataset name variations (try with and without organization prefix)
+        variations = [dataset_name]
+        
+        # Add common organization prefixes if not already present
+        if '/' not in dataset_name:
+            common_orgs = ['stanfordnlp', 'rajpurkar', 'abisee', 'EdinburghNLP', 
+                          'Samsung', 'Helsinki-NLP', 'fancyzhx', 'SetFit', 
+                          'Salesforce', 'mandarjoshi', 'allenai', 'bigcode',
+                          'HuggingFaceH4']
+            for org in common_orgs:
+                variations.append(f"{org}/{dataset_name}")
+        
+        # Try each variation
+        last_error = None
+        for variant in variations:
+            try:
+                # Strategy 1: Try loading without config (works for simple datasets)
+                self.data_agent.log(f"Attempting to load: {variant}")
+                return load_dataset(variant, split=split, trust_remote_code=True)
+            except Exception as e1:
+                last_error = e1
+                self.data_agent.log(f"Direct load failed for {variant}: {str(e1)[:100]}")
+                
+                # Strategy 2: Try to get available configs and use the first one
+                try:
+                    configs = get_dataset_config_names(variant, trust_remote_code=True)
+                    if configs:
+                        config = configs[0]
+                        self.data_agent.log(f"Found {len(configs)} configs for {variant}, using: {config}")
+                        return load_dataset(variant, config, split=split, trust_remote_code=True)
+                except Exception as e2:
+                    self.data_agent.log(f"Config-based load failed for {variant}: {str(e2)[:100]}")
+                
+                # Strategy 3: Try loading the full dataset then accessing the split
+                try:
+                    full_dataset = load_dataset(variant, trust_remote_code=True)
+                    if split in full_dataset:
+                        return full_dataset[split]
+                    elif "train" in full_dataset:
+                        self.data_agent.log(f"Split '{split}' not found in {variant}, using 'train'")
+                        return full_dataset["train"]
+                    else:
+                        # Return first available split
+                        first_split = list(full_dataset.keys())[0]
+                        self.data_agent.log(f"Using first available split for {variant}: {first_split}")
+                        return full_dataset[first_split]
+                except Exception as e3:
+                    self.data_agent.log(f"Full dataset load failed for {variant}: {str(e3)[:100]}")
+                    continue
+        
+        # If all strategies fail, raise helpful error
+        error_msg = (
+            f"Failed to load dataset '{dataset_name}'. "
+            f"Tried variations: {', '.join(variations)}. "
+            f"Please check: 1) Dataset name is correct, 2) Dataset exists on Hugging Face Hub, "
+            f"3) You have internet access. "
+            f"Last error: {str(last_error)[:200]}"
+        )
+        raise Exception(error_msg)
     
     def fine_tune_model(self, config: Dict[str, Any], run_id: str):
         self.monitoring_agent.log(f"Starting MLflow run {run_id}")
@@ -60,7 +123,7 @@ class MLCrewAgents:
         })
         
         self.data_agent.log(f"Loading dataset {dataset_name}")
-        dataset = load_dataset(dataset_name, split="train")
+        dataset = self._load_dataset_with_fallback(dataset_name, "train")
         self.data_agent.log(f"Dataset ready: {len(dataset)} samples")
         
         self.training_agent.log(f"Loading model {model_name}")
@@ -84,10 +147,16 @@ class MLCrewAgents:
         model = get_peft_model(model, lora_config)
         
         self.data_agent.log("Tokenizing dataset")
+        # Automatically detect text column
+        text_column = self._find_text_column(dataset)
+        self.data_agent.log(f"Using text column: {text_column}")
+        
         def tokenize_function(examples):
-            text_column = list(examples.keys())[0]
+            texts = examples[text_column]
+            # Handle case where text might be None or empty
+            texts = [str(t) if t is not None else "" for t in texts]
             return tokenizer(
-                examples[text_column],
+                texts,
                 padding="max_length",
                 truncation=True,
                 max_length=config["max_length"]
@@ -131,6 +200,75 @@ class MLCrewAgents:
         mlflow.end_run()
         
         return {"status": "completed", "model_path": f"./data/models/{run_id}/final_model"}
+    
+    def _find_text_column(self, dataset):
+        """Automatically detect the text column in a dataset."""
+        # Common text column names
+        common_names = ["text", "content", "sentence", "document", "article", "body", "prompt"]
+        
+        column_names = dataset.column_names
+        
+        # First, check for common names
+        for name in common_names:
+            if name in column_names:
+                return name
+        
+        # If not found, look for columns containing "text" in the name
+        for col in column_names:
+            if "text" in col.lower():
+                return col
+        
+        # If still not found, use the first string column
+        if column_names:
+            return column_names[0]
+        
+        raise ValueError(f"Could not find a text column in dataset. Available columns: {column_names}")
+    
+    def validate_dataset(self, dataset_name: str) -> Dict[str, Any]:
+        """Validate a dataset and return its information."""
+        try:
+            self.data_agent.log(f"Validating dataset {dataset_name}")
+            
+            # Try to load the dataset
+            dataset = self._load_dataset_with_fallback(dataset_name, "train")
+            
+            # Get column info
+            columns = dataset.column_names
+            text_column = self._find_text_column(dataset)
+            
+            # Get sample texts (first 3)
+            sample_texts = []
+            for i in range(min(3, len(dataset))):
+                text = dataset[i][text_column]
+                # Truncate long texts
+                text_str = str(text)[:200] + "..." if len(str(text)) > 200 else str(text)
+                sample_texts.append(text_str)
+            
+            self.data_agent.log(f"Dataset validation successful")
+            
+            return {
+                "valid": True,
+                "dataset_name": dataset_name,
+                "config_used": None,  # Could be enhanced to track this
+                "num_samples": len(dataset),
+                "columns": columns,
+                "text_column": text_column,
+                "sample_texts": sample_texts,
+                "error": None
+            }
+            
+        except Exception as e:
+            self.data_agent.log(f"Dataset validation failed: {str(e)}")
+            return {
+                "valid": False,
+                "dataset_name": dataset_name,
+                "config_used": None,
+                "num_samples": None,
+                "columns": None,
+                "text_column": None,
+                "sample_texts": None,
+                "error": str(e)
+            }
     
     def execute_training(self, config: Dict[str, Any], run_id: str):
         return self.fine_tune_model(config, run_id)
