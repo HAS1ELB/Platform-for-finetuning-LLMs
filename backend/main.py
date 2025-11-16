@@ -106,8 +106,11 @@ def create_training(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user)
 ):
-    run_id = str(uuid.uuid4())
-    mlflow.create_run(run_id=run_id, experiment_id="0")
+    # Fix: Use mlflow.start_run which handles experiment creation
+    mlflow.set_experiment("mini-cloud-training")
+    run = mlflow.start_run(nested=True)
+    run_id = run.info.run_id
+    mlflow.end_run()  # End it immediately, will be used in background task
     
     db_training = Training(
         model_name=config.model_name,

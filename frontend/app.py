@@ -3,7 +3,7 @@ import requests
 import pandas as pd
 import time
 
-API_URL = "http://backend:8000"
+API_URL = "http://localhost:8000"
 
 st.set_page_config(page_title="Mini Cloud Training", page_icon="☁️", layout="wide")
 
