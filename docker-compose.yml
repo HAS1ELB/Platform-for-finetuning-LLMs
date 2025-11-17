@@ -28,7 +28,7 @@ services:
     restart: unless-stopped
 
   mlflow:
-    image: ghcr.io/mlflow/mlflow:v2.10.0
+    image: ghcr.io/mlflow/mlflow:v2.18.0
     container_name: minicloud-mlflow
     ports:
       - "5000:5000"
