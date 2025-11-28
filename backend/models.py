@@ -35,11 +35,14 @@ class TrainingResponse(BaseModel):
     status: str
     mlflow_run_id: Optional[str]
     created_at: datetime
+    user_id: Optional[int]
+    username: Optional[str]
 
 class TrainingStatus(BaseModel):
     id: int
     status: str
     mlflow_run_id: Optional[str]
+    user_id: Optional[int]
 
 class DatasetValidationResponse(BaseModel):
     valid: bool

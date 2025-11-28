@@ -1,11 +1,12 @@
+import os
 from typing import Dict, Any
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments, Trainer
-from datasets import load_dataset, get_dataset_config_names
-from peft import LoraConfig, get_peft_model, TaskType
 import mlflow
-import os
 from datetime import datetime
+
+os.environ.setdefault('TRANSFORMERS_NO_TF', '1')
+os.environ.setdefault('TF_ENABLE_ONEDNN_OPTS', '0')
+
 
 class Agent:
     def __init__(self, role: str, goal: str):
@@ -19,16 +20,33 @@ class Agent:
 class MLCrewAgents:
     def __init__(self):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "./mlruns"))
+        # Log the device chosen for training and warn the user if on CPU
+        self.training_agent = Agent(
+            role="Training Specialist",
+            goal="Fine-tune language models with optimal configurations"
+        )
+        # Also log detected GPU name for better visibility
+        try:
+            if torch.cuda.is_available():
+                gpu_name = torch.cuda.get_device_name(0)
+                self.training_agent.log(f"Device chosen for training: {self.device} — {gpu_name}")
+            else:
+                self.training_agent.log(f"Device chosen for training: {self.device}")
+                if self.device == "cpu":
+                    self.training_agent.log("WARNING: No GPU detected - training will be slow on CPU. Consider installing a CUDA-enabled PyTorch wheel if you have a GPU.")
+        except Exception:
+            self.training_agent.log(f"Device chosen for training: {self.device}")
+        # Use a default mlruns directory at repository root (../mlruns) for easier access
+        # Store as self.repo_root so we can refer to it from instance methods
+        self.repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        default_mlruns = os.path.join(self.repo_root, 'mlruns')
+        mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", default_mlruns))
         
         self.data_agent = Agent(
             role="Data Manager",
             goal="Load and prepare datasets from Hugging Face"
         )
-        self.training_agent = Agent(
-            role="Training Specialist", 
-            goal="Fine-tune language models with optimal configurations"
-        )
+        # `self.training_agent` created above
         self.evaluation_agent = Agent(
             role="Evaluation Expert",
             goal="Evaluate model performance and generate metrics"
@@ -37,6 +55,19 @@ class MLCrewAgents:
             role="MLflow Monitor",
             goal="Track experiments and log metrics to MLflow"
         )
+        # Perform a lightweight availability check for Trainer/TrainingArguments.
+        # We use importlib with try/except to avoid raising during startup; this
+        # allows the app to surface a helpful message in the UI if required
+        # training dependencies are not installed.
+        self.trainer_available = False
+        try:
+            import importlib
+            if importlib.util.find_spec('transformers') is not None:
+                # Try to import the training components to confirm full availability
+                from transformers import TrainingArguments, Trainer  # type: ignore
+                self.trainer_available = True
+        except Exception:
+            self.trainer_available = False
     
     def load_dataset_task(self, dataset_name: str, split: str = "train"):
         self.data_agent.log(f"Loading dataset {dataset_name}")
@@ -61,6 +92,9 @@ class MLCrewAgents:
         
         # Try each variation
         last_error = None
+        # Import datasets lazily to avoid module-level required imports
+        from datasets import load_dataset, get_dataset_config_names
+
         for variant in variations:
             try:
                 # Strategy 1: Try loading without config (works for simple datasets)
@@ -133,16 +167,24 @@ class MLCrewAgents:
         self.data_agent.log(f"Dataset ready: {len(dataset)} samples")
         
         self.training_agent.log(f"Loading model {model_name}")
+        # Import transformer-related heavy dependencies lazily to avoid import-time
+        # overhead and to ensure the TRANSFORMERS_NO_TF env var takes effect.
+        from transformers import AutoTokenizer, AutoModelForCausalLM
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
         
+        dtype = torch.float16 if self.device == "cuda" else torch.float32
+        self.training_agent.log(f"Loading model {model_name} on device {self.device} with dtype {dtype}")
+        # Use `dtype` instead of the deprecated `torch_dtype` argument
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
+            dtype=dtype,
             device_map="auto" if self.device == "cuda" else None
         )
         
+        # Import peft lazily and configure LoRA adapters
+        from peft import LoraConfig, get_peft_model, TaskType
         self.training_agent.log("Configuring LoRA adapters")
         lora_config = LoraConfig(
             task_type=TaskType.CAUSAL_LM,
@@ -178,16 +220,28 @@ class MLCrewAgents:
             remove_columns=dataset.column_names  # Remove original columns, keep only tokenized
         )
         
+        # Import TrainingArguments and Trainer lazily to avoid startup import issues
+        try:
+            from transformers import TrainingArguments, Trainer
+        except Exception as e:
+            self.training_agent.log(f"Could not import Trainer/TrainingArguments: {str(e)}")
+            raise RuntimeError("Transformers Trainer not available in this environment. If you don't need training, proceed without installing the trainer dependencies; otherwise ensure transformers and torch are installed correctly.")
+
+        output_dir = os.path.join(self.repo_root, f"data/models/{run_id}")
+        os.makedirs(output_dir, exist_ok=True)
+        # Enable fp16 only if GPU is available; increase dataloader workers for GPU to speed up I/O
+        dataloader_workers = 0 if self.device == "cpu" else max(1, min(4, (os.cpu_count() or 1) - 1))
         training_args = TrainingArguments(
-            output_dir=f"./data/models/{run_id}",
+            output_dir=output_dir,
             num_train_epochs=config["num_epochs"],
             per_device_train_batch_size=config["batch_size"],
             learning_rate=config["learning_rate"],
             logging_steps=10,
             save_strategy="epoch",
             report_to="none",
-            dataloader_num_workers=0,  # Avoid multiprocessing issues on Windows
-            dataloader_pin_memory=False  # Disable pin_memory on CPU
+            dataloader_num_workers=dataloader_workers,
+            dataloader_pin_memory=(self.device == "cuda"),
+            fp16=(self.device == "cuda")
         )
         
         self.training_agent.log("Starting fine-tuning")
@@ -214,13 +268,15 @@ class MLCrewAgents:
         })
         
         self.training_agent.log("Saving model")
-        model.save_pretrained(f"./data/models/{run_id}/final_model")
-        tokenizer.save_pretrained(f"./data/models/{run_id}/final_model")
+        model_dir = os.path.join(self.repo_root, f"data/models/{run_id}/final_model")
+        os.makedirs(model_dir, exist_ok=True)
+        model.save_pretrained(model_dir)
+        tokenizer.save_pretrained(model_dir)
         
         self.monitoring_agent.log("Logging to MLflow completed")
         mlflow.end_run()
         
-        return {"status": "completed", "model_path": f"./data/models/{run_id}/final_model"}
+        return {"status": "completed", "model_path": os.path.join(self.repo_root, f"data/models/{run_id}/final_model")}
     
     def _find_text_column(self, dataset):
         """Automatically detect the text column in a dataset."""
