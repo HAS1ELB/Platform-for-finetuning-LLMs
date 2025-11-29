@@ -15,7 +15,9 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    # Truncate the plain password to 72 characters to comply with bcrypt limitations
+    truncated_password = password[:72]
+    return pwd_context.hash(truncated_password)
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     # Truncate the plain password to 72 characters to comply with bcrypt limitations

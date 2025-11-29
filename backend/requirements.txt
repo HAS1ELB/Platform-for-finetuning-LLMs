@@ -1,0 +1,17 @@
+fastapi
+uvicorn
+sqlalchemy
+python-dotenv
+requests
+huggingface_hub
+mlflow
+passlib[bcrypt]
+python-multipart
+python-jose[cryptography]
+transformers
+torch
+datasets
+accelerate
+peft
+
+bcrypt==3.2.2

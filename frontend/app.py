@@ -6,6 +6,7 @@ import pandas as pd
 import time
 
 API_URL = os.getenv("API_URL", "http://localhost:8000")
+PUBLIC_API_URL = os.getenv("PUBLIC_API_URL", "http://localhost:8000")
 
 # Simple local token caching to persist logins across Streamlit reloads (local dev only)
 TOKEN_CACHE_FILE = os.path.join(os.path.dirname(__file__), '.token')
@@ -190,7 +191,7 @@ def login_page():
                             # Instruct the backend to set a httpOnly cookie using the token we just received.
                             # This avoids sharing the raw token with JavaScript; it's a local development convenience.
                             components.html(
-                                f"<script>fetch('{API_URL}/session/set', {{ method: 'POST', credentials: 'include', headers: {{ 'Content-Type': 'application/json' }}, body: JSON.stringify({{'access_token':'{st.session_state.token}','token_type':'bearer'}}) }}).then(()=>{{console.log('cookie set')}}).catch(()=>{{}});</script>",
+                                f"<script>fetch('{PUBLIC_API_URL}/session/set', {{ method: 'POST', credentials: 'include', headers: {{ 'Content-Type': 'application/json' }}, body: JSON.stringify({{'access_token':'{st.session_state.token}','token_type':'bearer'}}) }}).then(()=>{{console.log('cookie set')}}).catch(()=>{{}});</script>",
                                 height=0,
                             )
                             st.success("Login successful! Redirecting...")
@@ -257,7 +258,7 @@ def register_page():
                                 st.session_state.token = data["access_token"]
                                 save_token_to_file(st.session_state.token)
                                 components.html(
-                                    f"<script>fetch('{API_URL}/session/set', {{ method: 'POST', credentials: 'include', headers: {{ 'Content-Type': 'application/json' }}, body: JSON.stringify({{'access_token':'{st.session_state.token}','token_type':'bearer'}}) }}).then(()=>{{console.log('cookie set')}}).catch(()=>{{}});</script>",
+                                    f"<script>fetch('{PUBLIC_API_URL}/session/set', {{ method: 'POST', credentials: 'include', headers: {{ 'Content-Type': 'application/json' }}, body: JSON.stringify({{'access_token':'{st.session_state.token}','token_type':'bearer'}}) }}).then(()=>{{console.log('cookie set')}}).catch(()=>{{}});</script>",
                                     height=0,
                                 )
                                 st.success("Registration successful! Redirecting...")

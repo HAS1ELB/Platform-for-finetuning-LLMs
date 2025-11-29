@@ -4,6 +4,6 @@ data/
 venv/
 *.token
 
-requirements.txt
+mlruns/
 
 *.dockerignore
